@@ -26,11 +26,13 @@ public:
     void setFrequency(QString freq);
     void setIp(QString ip);
     void setPort(QString port);
+    void runThread();
+    void startWork();
     uint32_t getFrequency();
     uint32_t getIp();
     uint16_t getPort();
     int initSocket(SOCKET &sock, SocketType type);
-    ETH_RX_CTRL::set_log_destination packetSetPortCommand(uint32_t ip, uint16_t port);
+    ETH_RX_CTRL::set_log_destination packetSetPortCommand(ETH_RX_CTRL::header_req h, uint32_t ip, uint16_t port);
     ETH_RX_CTRL::set_freq packetSetFreqCommand(ETH_RX_CTRL::header_req h, uint32_t f_hz);
     ETH_RX_CTRL::header_req headerReqWrite(uint32_t s, uint32_t m_id, uint16_t t);
     int connectToReceiver();
@@ -52,7 +54,8 @@ private:
     ETH_RX_CTRL::set_freq m_setFreq;
 
     std::thread* m_workerThread = nullptr;
-    std::atomic<bool> m_running;
+    std::atomic<bool> m_running = false;
+    void run();
 };
 
 

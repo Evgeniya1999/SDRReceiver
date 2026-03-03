@@ -38,7 +38,7 @@ void SpectrumReceiver::freqWrite(const QString freq){
     receive_manager->setFrequency(freq);
 }
 void SpectrumReceiver::connectToReceive(){
-
+    receive_manager->startWork();
 }
 
 SpectrumReceiver::~SpectrumReceiver()
