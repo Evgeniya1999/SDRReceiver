@@ -38,6 +38,16 @@ void SpectrumReceiver::freqWrite(const QString freq){
     receive_manager->setFrequency(freq);
 }
 void SpectrumReceiver::connectToReceive(){
+    if (receive_manager->connectToReceiver() != 0) {
+        qDebug() << "Failed to connect to receiver";
+        return;
+    }
+
+    // 2. Настройка приёмника (отправка команд и ожидание ответов)
+    if (receive_manager->configReceiver() != 0) {
+        qDebug() << "Failed to configure receiver";
+        return;
+    }
     receive_manager->startWork();
 }
 

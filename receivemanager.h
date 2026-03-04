@@ -28,6 +28,8 @@ public:
     void setPort(QString port);
     void runThread();
     void startWork();
+    void readSocket(SOCKET &s, std::vector<char>& buffer, int expected_mess_id);
+
     uint32_t getFrequency();
     uint32_t getIp();
     uint16_t getPort();
@@ -37,6 +39,9 @@ public:
     ETH_RX_CTRL::header_req headerReqWrite(uint32_t s, uint32_t m_id, uint16_t t);
     int connectToReceiver();
     int sendCommand(SOCKET s, const void* packet, int size);
+    int parseTypeMess(std::vector<char> &buffer);
+    int configReceiver();
+    int waitForResponse(int mess_id, int timeout);
 
 private:
     QString m_freq;
@@ -48,6 +53,12 @@ private:
 
     SOCKET m_tcpSock = INVALID_SOCKET;
     SOCKET m_udpSock = INVALID_SOCKET;
+
+    std::vector<char> m_tcpBuffer;
+    std::vector<char> m_udpBuffer;
+    std::vector<char> m_iqBuffer;
+
+
 
     ETH_RX_CTRL::set_log_destination m_setPortStruct;
     ETH_RX_CTRL::header_req  m_headerReq;
