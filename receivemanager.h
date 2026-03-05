@@ -28,7 +28,7 @@ public:
     void setPort(QString port);
     void runThread();
     void startWork();
-    void readSocket(SOCKET &s, std::vector<char>& buffer, int expected_mess_id);
+    void stopWork();
 
     uint32_t getFrequency();
     uint32_t getIp();
@@ -37,11 +37,14 @@ public:
     ETH_RX_CTRL::set_log_destination packetSetPortCommand(ETH_RX_CTRL::header_req h, uint32_t ip, uint16_t port);
     ETH_RX_CTRL::set_freq packetSetFreqCommand(ETH_RX_CTRL::header_req h, uint32_t f_hz);
     ETH_RX_CTRL::header_req headerReqWrite(uint32_t s, uint32_t m_id, uint16_t t);
+    ETH_RX_CTRL::stop_iq_stream packetStopStreamCommand(ETH_RX_CTRL::header_req h);
+    ETH_RX_CTRL::ctrl_iq_stream_now packetStartStreamCommand(ETH_RX_CTRL::header_req h, uint32_t ip, uint16_t port);
     int connectToReceiver();
-    int sendCommand(SOCKET s, const void* packet, int size);
+    int sendCommand(SOCKET s, const void* packet, int size, ETH_RX_CTRL::COMMAND command);
     int parseTypeMess(std::vector<char> &buffer);
     int configReceiver();
     int waitForResponse(int mess_id, int timeout);
+    int readSocket(SOCKET &s, std::vector<char>& buffer, int expected_mess_id);
 
 private:
     QString m_freq;
@@ -63,6 +66,8 @@ private:
     ETH_RX_CTRL::set_log_destination m_setPortStruct;
     ETH_RX_CTRL::header_req  m_headerReq;
     ETH_RX_CTRL::set_freq m_setFreq;
+    ETH_RX_CTRL::stop_iq_stream m_stopStream;
+    ETH_RX_CTRL::ctrl_iq_stream_now m_startStream;
 
     std::thread* m_workerThread = nullptr;
     std::atomic<bool> m_running = false;

@@ -23,11 +23,55 @@ void ReceiveManager::startWork(){
     m_running = true;
     m_workerThread = new std::thread(&ReceiveManager::runThread, this);
 }
+void ReceiveManager::stopWork(){
+    if (m_running) {
+        int stop_stream_mess_id = htons(static_cast<uint32_t>(GetCurrentProcessId()+3));
+        auto headerForStopStream = headerReqWrite(sizeof(ETH_RX_CTRL::stop_iq_stream), stop_stream_mess_id, ETH_RX_CTRL::STOP_IQ_STREAM_0xE);
+        auto stopStreamPacket = packetStopStreamCommand(headerForStopStream);
+        if (sendCommand(m_udpSock, &stopStreamPacket, sizeof(stopStreamPacket), ETH_RX_CTRL::STOP_IQ_STREAM_0xE) == SOCKET_ERROR){
+            qDebug() << "Failed to send stop stream command";
+        };
+        if (waitForResponse(stop_stream_mess_id, 10000) == SOCKET_ERROR) {
+            qDebug() << "No response for stop stream command";
+
+        }
+        m_running = false;
+        closesocket(m_udpSock);
+    }
+    closesocket(m_tcpSock);
+    WSACleanup();
+
+}
 
 using Header_Ans = ETH_RX_CTRL::header_ans;
 
 
 void ReceiveManager::runThread(){
+
+    if (initSocket(m_udpSock, UDP_SOCKET) != 0) return;
+
+    struct sockaddr_in dest_addr {};
+    dest_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    dest_addr.sin_port = htons(42000);
+    dest_addr.sin_family = AF_INET;
+    int bind_flag = ::bind(m_udpSock, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
+    if (bind_flag == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        qDebug() << "Bind failed with error:" << err;
+        return;
+    }
+
+    int start_stream_mess_id = htons(static_cast<uint32_t>(GetCurrentProcessId()+4));
+    auto headerForStartStream = headerReqWrite(sizeof(ETH_RX_CTRL::ctrl_iq_stream_now), start_stream_mess_id, ETH_RX_CTRL::CTRL_IQ_STREAM_NOW_0xC);
+
+    auto startStreamPacket = packetStartStreamCommand(headerForStartStream, dest_addr.sin_addr.s_addr, dest_addr.sin_port);
+    if (sendCommand(m_tcpSock, &startStreamPacket, sizeof(startStreamPacket), ETH_RX_CTRL::CTRL_IQ_STREAM_NOW_0xC) == SOCKET_ERROR){
+        qDebug() << "Failed to send start stream command";
+    };
+    if (waitForResponse(start_stream_mess_id, 10000) == SOCKET_ERROR) {
+        qDebug() << "No response for start stream command";
+
+    }
     const int IQ_COUNT = 1024;
     const int IQ_SIZE = 2 * sizeof(int);
     m_iqBuffer.reserve(IQ_COUNT * IQ_SIZE);
@@ -48,7 +92,7 @@ void ReceiveManager::runThread(){
             int bytes = recvfrom(m_udpSock, temp, sizeof(temp), 0,
                                  (sockaddr*)&sender, &sender_size);
 
-            if (bytes > 0) {
+            if (bytes > 0 && bytes != 80) {
 
                 qDebug() << "Received UDP packet:" << bytes << "bytes";
             }
@@ -58,35 +102,13 @@ void ReceiveManager::runThread(){
 }
 int ReceiveManager::configReceiver(){
 
-    if (initSocket(m_udpSock, UDP_SOCKET) != 0) return -1;
-
-    struct sockaddr_in dest_addr {};
-    dest_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    dest_addr.sin_port = htons(42000);
-    dest_addr.sin_family = AF_INET;
-    int bind_flag = ::bind(m_udpSock, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
-    if (bind_flag == SOCKET_ERROR) {
-        int err = WSAGetLastError();
-        qDebug() << "Bind failed with error:" << err;
-        return -1;
-    }
     int freq_mess_id = htons(static_cast<uint32_t>(GetCurrentProcessId()));
     auto headerForFreq = headerReqWrite(sizeof(ETH_RX_CTRL::set_freq), freq_mess_id, ETH_RX_CTRL::SET_FREQ_REQUEST_0x2);
     auto freqPacket = packetSetFreqCommand(headerForFreq, m_freq_to_uint32);
-    if (sendCommand(m_tcpSock, &freqPacket, sizeof(freqPacket)) == SOCKET_ERROR){
+    if (sendCommand(m_tcpSock, &freqPacket, sizeof(freqPacket), ETH_RX_CTRL::SET_FREQ_REQUEST_0x2) == SOCKET_ERROR){
         qDebug() << "Failed to send frequency command";
     };
-    if (!waitForResponse(freq_mess_id, 10000)) {
-        qDebug() << "No response for frequency command";
-        return -1;
-    }
-    int port_mess_id = htons(static_cast<uint32_t>(GetCurrentProcessId())+1);
-    auto headerPort = headerReqWrite(sizeof(ETH_RX_CTRL::set_freq), port_mess_id, ETH_RX_CTRL::SET_LOG_DESTINATION_0x17);
-    auto headerPacket = packetSetPortCommand(headerPort, m_ip_to_uint32, m_port_to_uint16);
-    if (sendCommand(m_tcpSock, &headerPacket, sizeof(headerPacket)) == SOCKET_ERROR){
-        qDebug() << "Failed to send frequency command";
-    };
-    if (!waitForResponse(port_mess_id, 10000)) {
+    if (waitForResponse(freq_mess_id, 10000) == SOCKET_ERROR) {
         qDebug() << "No response for frequency command";
         return -1;
     }
@@ -99,7 +121,7 @@ int ReceiveManager::waitForResponse(int mess_id, int timeout){
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
         if (elapsed > timeout) {
             qDebug() << "Timeout waiting for response";
-            return false;
+            return -1;
         }
         fd_set readfs;
         FD_ZERO(&readfs);
@@ -112,7 +134,9 @@ int ReceiveManager::waitForResponse(int mess_id, int timeout){
             break;
         }
         if (FD_ISSET(m_tcpSock, &readfs)) {
-            readSocket(m_tcpSock, m_tcpBuffer, mess_id);
+            if (readSocket(m_tcpSock, m_tcpBuffer, mess_id) == 0) {
+                break;
+            }
         } else {
             //cout << "socket is not ready!" << endl;
         }
@@ -128,9 +152,9 @@ void print_hex(const char* data, int len, int countBytes)
 
     QByteArray bytes(data, to_show);
     QByteArray hexData = bytes.toHex(' ').toUpper();
-    qDebug() << "send Hex:" << hexData;
+    qDebug() << "Hex:" << hexData;
 }
-void ReceiveManager::readSocket(SOCKET &s, std::vector<char>& buffer, int expected_mess_id){
+int ReceiveManager::readSocket(SOCKET &s, std::vector<char>& buffer, int expected_mess_id){
     char temp_buffer[4096];
     int bytes;
 
@@ -138,17 +162,19 @@ void ReceiveManager::readSocket(SOCKET &s, std::vector<char>& buffer, int expect
     if (bytes == SOCKET_ERROR) {
         int error_code = WSAGetLastError();
             qDebug() << "recv failed with error: " << error_code;
-        return;
+        return -1;
     }
     if (bytes == 0) {
         qDebug() << "Connection closed by receiver";
-        return;
+        return -1;
     }
     buffer.insert(buffer.end(), temp_buffer, temp_buffer + bytes);
+    qDebug() << "read socket. buffer size: " << buffer.size();
     qDebug() << "Received TCP packet:" << bytes << "bytes";
     print_hex(buffer.data(), bytes, bytes);
     while (true){
         if (buffer.size() < sizeof(ETH_RX_CTRL::header_ans)){
+            qDebug() << "min size for buffer is size header: " << sizeof(ETH_RX_CTRL::header_ans);
             qDebug() << "Not enough data for header, waiting for more";
             break;
         }
@@ -171,14 +197,16 @@ void ReceiveManager::readSocket(SOCKET &s, std::vector<char>& buffer, int expect
             if (header->cmd_complete == ETH_RX_CTRL::good) {
 
                 qDebug() << "Command" << header->cmd_type << "completed successfully";
-                return;
+                return 0;
             } else {
                 qDebug() << "Command failed with code:" << header->cmd_complete;
-                return;
+                return -1;
             }
         }
+
         buffer.erase(buffer.begin(), buffer.begin() + msg_size);
     }
+    return 0;
 }
 int ReceiveManager::initSocket(SOCKET &sock, SocketType type){
     WORD wVersionRequested;
@@ -233,6 +261,17 @@ ETH_RX_CTRL::set_freq ReceiveManager::packetSetFreqCommand(ETH_RX_CTRL::header_r
 
     return m_setFreq;
 }
+ETH_RX_CTRL::stop_iq_stream ReceiveManager::packetStopStreamCommand(ETH_RX_CTRL::header_req h){
+    m_stopStream.head = h;
+    return m_stopStream;
+}
+ETH_RX_CTRL::ctrl_iq_stream_now ReceiveManager::packetStartStreamCommand(ETH_RX_CTRL::header_req h, uint32_t ip, uint16_t port){
+    m_startStream.head = h;
+    m_startStream.IP_stream = ip;
+    m_startStream.port_stream = port;
+    m_startStream.preset_num = 0xffff;
+    return m_startStream;
+}
 
 ETH_RX_CTRL::header_req ReceiveManager::headerReqWrite(uint32_t s, uint32_t m_id, uint16_t t){
     m_headerReq.size = s; //размер всего сообщения с заголовком
@@ -243,12 +282,13 @@ ETH_RX_CTRL::header_req ReceiveManager::headerReqWrite(uint32_t s, uint32_t m_id
     return m_headerReq;
 }
 
-int ReceiveManager::sendCommand(SOCKET s, const void* packet, int size){
+int ReceiveManager::sendCommand(SOCKET s, const void* packet, int size , ETH_RX_CTRL::COMMAND command){
     int send_bytes = send(s, reinterpret_cast<const char*>(packet), size, 0);
     if (send_bytes == SOCKET_ERROR) {
         qDebug() << "Send error:" << WSAGetLastError();
         return -1;
     }
+    qDebug() << "send " << "0x" + QString::number(command, 16).toUpper() << " command. command size: " << send_bytes << "bytes";
     return 0;
 }
 
@@ -264,7 +304,7 @@ int ReceiveManager::connectToReceiver(){
     if (connect_flag == SOCKET_ERROR) {
         int err = WSAGetLastError();
         qDebug() << "Connect failed with error:" << err;
-        return 0;
+        return -1;
     }
 
     return 0;
