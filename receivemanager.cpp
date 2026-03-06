@@ -33,7 +33,6 @@ void ReceiveManager::stopWork(){
         };
         if (waitForResponse(stop_stream_mess_id, 10000) == SOCKET_ERROR) {
             qDebug() << "No response for stop stream command";
-
         }
         m_running = false;
         closesocket(m_udpSock);
@@ -68,10 +67,10 @@ void ReceiveManager::runThread(){
     if (sendCommand(m_tcpSock, &startStreamPacket, sizeof(startStreamPacket), ETH_RX_CTRL::CTRL_IQ_STREAM_NOW_0xC) == SOCKET_ERROR){
         qDebug() << "Failed to send start stream command";
     };
-    if (waitForResponse(start_stream_mess_id, 10000) == SOCKET_ERROR) {
-        qDebug() << "No response for start stream command";
+    //if (waitForResponse(start_stream_mess_id, 10000) == SOCKET_ERROR) {
+    //    qDebug() << "No response for start stream command";
 
-    }
+    //}
     const int IQ_COUNT = 1024;
     const int IQ_SIZE = 2 * sizeof(int);
     m_iqBuffer.reserve(IQ_COUNT * IQ_SIZE);
@@ -79,6 +78,7 @@ void ReceiveManager::runThread(){
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(m_udpSock, &readfds);
+        FD_SET(m_tcpSock, &readfds);
 
         timeval tv{0, 100000};  // 100ms таймаут
 
@@ -93,11 +93,26 @@ void ReceiveManager::runThread(){
                                  (sockaddr*)&sender, &sender_size);
 
             if (bytes > 0 && bytes != 80) {
+                std::vector<char> packetData(temp, temp + bytes);
+                // Вызываем парсер
+                int result = parseUdpPacket(packetData);
+                if (result != 0) {
+                    qDebug() << "parseUdpPacket returned error:" << result;
+                }
+                //if (bytes > 0 && bytes != 80) {
 
-                qDebug() << "Received UDP packet:" << bytes << "bytes";
+                //    qDebug() << "Received UDP packet:" << bytes << "bytes";
+                //}
             }
+
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (FD_ISSET(m_tcpSock, &readfds)) {
+            if (readSocket(m_tcpSock, m_tcpBuffer, start_stream_mess_id) == 0) {
+                break;
+            }
+        } else {
+            //cout << "socket is not ready!" << endl;
+        }
     }
 }
 int ReceiveManager::configReceiver(){
@@ -141,6 +156,62 @@ int ReceiveManager::waitForResponse(int mess_id, int timeout){
             //cout << "socket is not ready!" << endl;
         }
     }
+    return 0;
+}
+int ReceiveManager::parseUdpPacket(std::vector<char> &buffer){
+    if (buffer.size() < sizeof(UDP_IQ::header_t)) return -1;
+    UDP_IQ::header_t* header = reinterpret_cast<UDP_IQ::header_t*>(buffer.data());
+    if ((header->mas_str[0] != 'h' and header->mas_str[1] != 'f') & (header->mas_str[0] != '68' and header->mas_str[1] != '66')) return -1;
+            qDebug() << "header->mas_str: " << header->mas_str[0] << header->mas_str[1];
+    uint32_t n_samples = header->n_samples;
+    if (n_samples == 0) return 0;
+    const char* iq_data = buffer.data() + sizeof(UDP_IQ::header_t);
+    int iq_data_len = buffer.size() - sizeof(UDP_IQ::header_t);
+    int byte_convert = 0;
+    switch (header->iq_format) {
+    case 0x82: // int16
+        byte_convert = 4; // I (2) + Q (2)
+        break;
+    case 0x84: // int24
+        byte_convert = 6; // I (3) + Q (3)
+        break;
+    default:
+        qDebug() << "Unsupported IQ format:" << header->iq_format;
+        return -1;
+    }
+    if (iq_data_len < static_cast<int>(n_samples * byte_convert))
+        return -1;
+    int samples_to_show = qMin(5, (int)n_samples);
+    for (auto i = 0; i < n_samples; i++){
+        float i_val = 0.0f, q_val = 0.0f;
+        const char* samplePtr = iq_data + i * iq_data_len;
+        if (header->iq_format == 0x82) {
+            const int32_t* i32 = reinterpret_cast<const int32_t*>(samplePtr);
+            i_val = i32[0] / 2147483648.0f;
+            q_val = i32[1] / 2147483648.0f;
+        } else if (header->iq_format == 0x84) {
+            const uint8_t* u8 = reinterpret_cast<const uint8_t*>(samplePtr);
+            int32_t i_raw = u8[0] | (u8[1] << 8) | (u8[2] << 16);
+            if (i_raw & 0x800000) i_raw |= 0xFF000000;
+            i_val = i_raw / 8388608.0f;
+
+            int32_t q_raw = u8[3] | (u8[4] << 8) | (u8[5] << 16);
+            if (q_raw & 0x800000) q_raw |= 0xFF000000;
+            q_val = q_raw / 8388608.0f;
+        }
+        if (i < samples_to_show) {
+            qDebug() << "  sample" << i << ": I =" << i_val << ", Q =" << q_val;
+        }
+
+        // Запись в кольцевой буфер
+        m_ringBuffer[m_writeIndex] = std::complex<float>(i_val, q_val);
+        m_writeIndex = (m_writeIndex + 1) % m_ringBuffer.size();
+        if (m_availableSamples < m_ringBuffer.size())
+            m_availableSamples++;
+    }
+    //if (m_availableSamples >= FFT_SIZE) {
+    //    processFft();
+    //}
     return 0;
 }
 void print_hex(const char* data, int len, int countBytes)
@@ -235,14 +306,14 @@ int ReceiveManager::initSocket(SOCKET &sock, SocketType type){
         WSACleanup();
         return -1;
     }
-    int ttl_value = 110;
-    if ( setsockopt( sock, IPPROTO_IP, IP_TTL, (const char*)&ttl_value,  sizeof(ttl_value)) != 0 ) {
-        int error_code = WSAGetLastError();
-        qDebug() << "setsockopt TTL failed with error: " << error_code;
-        closesocket(sock);
-        WSACleanup();
-        return -1;
-    }
+    //int ttl_value = 110;
+    //if ( setsockopt( sock, IPPROTO_IP, IP_TTL, (const char*)&ttl_value,  sizeof(ttl_value)) != 0 ) {
+    //    int error_code = WSAGetLastError();
+    //    qDebug() << "setsockopt TTL failed with error: " << error_code;
+    //    closesocket(sock);
+    //    WSACleanup();
+    //    return -1;
+    //}
 
     return 0;
 }

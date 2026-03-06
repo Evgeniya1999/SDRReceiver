@@ -7,6 +7,7 @@
 #include "uhp_rx_eth.h"
 
 #include "qobject.h"
+#include <complex>
 #include <cstdint>
 #include <thread>
 #include <winsock2.h>
@@ -45,6 +46,7 @@ public:
     int configReceiver();
     int waitForResponse(int mess_id, int timeout);
     int readSocket(SOCKET &s, std::vector<char>& buffer, int expected_mess_id);
+    int parseUdpPacket(std::vector<char>& buffer);
 
 private:
     QString m_freq;
@@ -60,7 +62,12 @@ private:
     std::vector<char> m_tcpBuffer;
     std::vector<char> m_udpBuffer;
     std::vector<char> m_iqBuffer;
+    std::vector<uint8_t> m_pointsBuffer;
 
+    static const int FFT_SIZE = 1024;
+    std::vector<std::complex<float>> m_ringBuffer; // кольцевой буфер
+    size_t m_writeIndex = 0;        // текущая позиция записи
+    size_t m_availableSamples = 0;
 
 
     ETH_RX_CTRL::set_log_destination m_setPortStruct;
